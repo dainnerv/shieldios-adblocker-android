@@ -11,10 +11,10 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 object BlocklistManager {
-    private val blockedDomains = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var blockedDomains: Set<String> = emptySet()
     private const val CACHE_FILE = "shield_blocklist_cache.txt"
 
     private val defaultDomains = listOf(
@@ -37,7 +37,6 @@ object BlocklistManager {
         "cdn.confiant-integrations.net",
         "adashx4ae.ut.taobao.com",
         "appsflyersdk.com",
-        "graph.instagram.com",
         "an.facebook.com",
         "pixel.facebook.com",
         "ads.tiktok.com",
@@ -63,20 +62,25 @@ object BlocklistManager {
     )
 
     suspend fun loadInitialList(context: Context) = withContext(Dispatchers.IO) {
+        if (blockedDomains.isNotEmpty()) {
+            AdBlockState.setDomainCount(blockedDomains.size)
+            return@withContext
+        }
         val file = File(context.filesDir, CACHE_FILE)
-        blockedDomains.clear()
+        val loaded = HashSet<String>(100_000)
         if (file.exists() && file.length() > 0) {
             file.bufferedReader().useLines { lines ->
                 lines.forEach { line ->
                     val d = line.trim()
-                    if (d.isNotEmpty()) blockedDomains.add(d)
+                    if (d.isNotEmpty()) loaded.add(d)
                 }
             }
         }
-        if (blockedDomains.isEmpty()) {
-            blockedDomains.addAll(defaultDomains)
+        if (loaded.isEmpty()) {
+            loaded.addAll(defaultDomains)
         }
-        AdBlockState.setDomainCount(blockedDomains.size)
+        blockedDomains = loaded
+        AdBlockState.setDomainCount(loaded.size)
     }
 
     suspend fun updateLists(context: Context): Result<Int> = withContext(Dispatchers.IO) {
@@ -84,7 +88,7 @@ object BlocklistManager {
         try {
             val selectedIds = AdBlockState.enabledLists.value
             val sources = AdBlockState.availableLists.filter { selectedIds.contains(it.id) }
-            val newSet = HashSet<String>(120_000)
+            val newSet = HashSet<String>(150_000)
             newSet.addAll(defaultDomains)
 
             for (source in sources) {
@@ -92,7 +96,7 @@ object BlocklistManager {
                     val conn = (URL(source.url).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 12_000
                         readTimeout = 20_000
-                        setRequestProperty("User-Agent", "ShieldIOS-Android/1.0")
+                        setRequestProperty("User-Agent", "ShieldIOS-Android/2.0")
                     }
                     if (conn.responseCode == 200) {
                         BufferedReader(InputStreamReader(conn.inputStream)).use { reader ->
@@ -105,12 +109,10 @@ object BlocklistManager {
                     }
                     conn.disconnect()
                 } catch (_: Exception) {
-                    // Continuar con las demás listas si una falla
                 }
             }
 
-            blockedDomains.clear()
-            blockedDomains.addAll(newSet)
+            blockedDomains = newSet
 
             val file = File(context.filesDir, CACHE_FILE)
             file.bufferedWriter().use { writer ->
@@ -120,10 +122,10 @@ object BlocklistManager {
                 }
             }
 
-            val stamp = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date())
-            AdBlockState.setDomainCount(blockedDomains.size)
-            AdBlockState.setLastUpdated(context, "Actualizada $stamp")
-            Result.success(blockedDomains.size)
+            val stamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+            AdBlockState.setDomainCount(newSet.size)
+            AdBlockState.setLastUpdated(context, "Actualizada hoy, $stamp")
+            Result.success(newSet.size)
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
@@ -137,19 +139,16 @@ object BlocklistManager {
             return null
         }
 
-        // Formato AdGuard: ||example.com^
         if (line.startsWith("||")) {
             val end = line.indexOf('^')
             val candidate = if (end > 2) line.substring(2, end) else line.substring(2)
             return sanitizeDomain(candidate)
         }
 
-        // Formato wildcard OISD: *.example.com
         if (line.startsWith("*.")) {
             return sanitizeDomain(line.substring(2))
         }
 
-        // Formato hosts: 0.0.0.0 example.com o 127.0.0.1 example.com
         if (line.startsWith("0.0.0.0") || line.startsWith("127.0.0.1")) {
             val parts = line.split(Regex("\\s+"))
             if (parts.size >= 2) {
@@ -174,7 +173,7 @@ object BlocklistManager {
         if (clean.isEmpty()) return false
 
         val whitelist = AdBlockState.whitelist.value
-        if (matchesDomainOrParent(clean, whitelist)) {
+        if (whitelist.isNotEmpty() && matchesDomainOrParent(clean, whitelist)) {
             return false
         }
 

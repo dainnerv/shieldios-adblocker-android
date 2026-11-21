@@ -51,6 +51,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        AdBlockState.pushUiSnapshot()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        AdBlockState.flushStatsToDisk(applicationContext)
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(

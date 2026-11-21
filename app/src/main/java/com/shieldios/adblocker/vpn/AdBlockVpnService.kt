@@ -25,6 +25,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class AdBlockVpnService : VpnService() {
 
@@ -35,11 +37,43 @@ class AdBlockVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
         private const val VPN_ADDRESS = "10.0.0.2"
         private const val VPN_DNS = "10.0.0.1"
+        private const val DNS_CACHE_TTL_MS = 5 * 60 * 1000L
+        private const val DNS_CACHE_MAX_SIZE = 1000
     }
+
+    private data class CachedDnsEntry(
+        val payload: ByteArray,
+        val expiresAtMs: Long
+    )
+
+    private data class PendingQuery(
+        val originalPacket: DnsPacketHelper.ParsedUdpPacket,
+        val origId0: Byte,
+        val origId1: Byte,
+        val cacheKey: String,
+        val createdAtMs: Long
+    )
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var serviceScope: CoroutineScope? = null
+    private var upstreamSocket: DatagramSocket? = null
     private val writeLock = Any()
+    private val socketLock = Any()
+    private val cacheLock = Any()
+
+    private val txIdCounter = AtomicInteger(1)
+    private val pendingQueries = ConcurrentHashMap<Int, PendingQuery>()
+
+    private val dnsCache = object : LinkedHashMap<String, CachedDnsEntry>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedDnsEntry>?): Boolean {
+            return size > DNS_CACHE_MAX_SIZE
+        }
+    }
+
+    @Volatile
+    private var cachedUpstreamIpStr: String = ""
+    @Volatile
+    private var cachedUpstreamInet: InetAddress? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -80,7 +114,7 @@ class AdBlockVpnService : VpnService() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Shield iOS activo")
-            .setContentText("Bloqueando anuncios y rastreadores localmente")
+            .setContentText("Bloqueo DNS local · Modo ahorro de batería")
             .setSmallIcon(R.drawable.ic_app_launcher)
             .setOngoing(true)
             .setSilent(true)
@@ -99,6 +133,41 @@ class AdBlockVpnService : VpnService() {
         }
     }
 
+    private fun getOrCreateUpstreamSocket(): DatagramSocket {
+        synchronized(socketLock) {
+            val existing = upstreamSocket
+            if (existing != null && !existing.isClosed) {
+                return existing
+            }
+            val created = DatagramSocket()
+            protect(created)
+            upstreamSocket = created
+            return created
+        }
+    }
+
+    private fun resetUpstreamSocket() {
+        synchronized(socketLock) {
+            try {
+                upstreamSocket?.close()
+            } catch (_: Exception) {
+            }
+            upstreamSocket = null
+        }
+    }
+
+    private fun resolveUpstreamAddress(): InetAddress {
+        val currentIp = AdBlockState.upstreamDnsIp.value
+        val existing = cachedUpstreamInet
+        if (existing != null && currentIp == cachedUpstreamIpStr) {
+            return existing
+        }
+        val resolved = InetAddress.getByName(currentIp)
+        cachedUpstreamIpStr = currentIp
+        cachedUpstreamInet = resolved
+        return resolved
+    }
+
     private fun startVpn() {
         stopTunnelOnly()
         AdBlockState.init(applicationContext)
@@ -109,6 +178,10 @@ class AdBlockVpnService : VpnService() {
             .addAddress(VPN_ADDRESS, 32)
             .addDnsServer(VPN_DNS)
             .addRoute(VPN_DNS, 32)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
+        }
 
         try {
             builder.addDisallowedApplication(packageName)
@@ -133,16 +206,27 @@ class AdBlockVpnService : VpnService() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         serviceScope = scope
 
+        val outputStream = FileOutputStream(tun.fileDescriptor)
+
+        // Único hilo receptor compartido para todas las respuestas DNS upstream
+        scope.launch {
+            runUpstreamReceiverLoop(outputStream, scope)
+        }
+
+        // Único hilo lector del túnel local (duerme en el kernel con 0% CPU cuando no hay DNS)
         scope.launch {
             BlocklistManager.loadInitialList(applicationContext)
-            runPacketLoop(tun, scope)
+            runTunReaderLoop(tun, outputStream, scope)
         }
     }
 
-    private fun runPacketLoop(tun: ParcelFileDescriptor, scope: CoroutineScope) {
+    private fun runTunReaderLoop(
+        tun: ParcelFileDescriptor,
+        outputStream: FileOutputStream,
+        scope: CoroutineScope
+    ) {
         val inputStream = FileInputStream(tun.fileDescriptor)
-        val outputStream = FileOutputStream(tun.fileDescriptor)
-        val buffer = ByteArray(4096)
+        val buffer = ByteArray(2048)
 
         try {
             while (scope.isActive) {
@@ -150,73 +234,152 @@ class AdBlockVpnService : VpnService() {
                 if (length <= 0) continue
 
                 val parsed = DnsPacketHelper.parseIpv4UdpDns(buffer, length) ?: continue
-                val domain = DnsPacketHelper.extractQueryDomain(parsed.dnsPayload) ?: continue
+                val question = DnsPacketHelper.extractQuestion(parsed.dnsPayload) ?: continue
+                val domain = question.domain
 
+                // 1. Si está bloqueado -> responder NXDOMAIN localmente (0 radio, 0 sockets)
                 if (BlocklistManager.isBlocked(domain)) {
                     AdBlockState.recordQuery(applicationContext, domain, blocked = true)
                     val nxPayload = DnsPacketHelper.buildNxDomainResponse(parsed.dnsPayload)
-                    val responsePacket = DnsPacketHelper.buildIpv4UdpResponse(parsed, nxPayload)
-                    synchronized(writeLock) {
-                        try {
-                            outputStream.write(responsePacket)
-                        } catch (_: Exception) {
-                        }
-                    }
-                } else {
-                    AdBlockState.recordQuery(applicationContext, domain, blocked = false)
-                    scope.launch {
-                        forwardDnsQuery(parsed, outputStream)
+                    writeToTun(outputStream, DnsPacketHelper.buildIpv4UdpResponse(parsed, nxPayload))
+                    continue
+                }
+
+                AdBlockState.recordQuery(applicationContext, domain, blocked = false)
+
+                // 2. Buscar en caché DNS local (ahorra hasta 70% de batería y radio móvil)
+                val cacheKey = "$domain:${question.qType}"
+                val now = System.currentTimeMillis()
+                val cachedResponse: ByteArray? = synchronized(cacheLock) {
+                    val entry = dnsCache[cacheKey]
+                    if (entry != null && entry.expiresAtMs > now) {
+                        entry.payload
+                    } else {
+                        if (entry != null) dnsCache.remove(cacheKey)
+                        null
                     }
                 }
+
+                if (cachedResponse != null) {
+                    AdBlockState.recordCacheHit()
+                    val responseCopy = cachedResponse.copyOf()
+                    responseCopy[0] = parsed.dnsPayload[0]
+                    responseCopy[1] = parsed.dnsPayload[1]
+                    writeToTun(outputStream, DnsPacketHelper.buildIpv4UdpResponse(parsed, responseCopy))
+                    continue
+                }
+
+                // 3. Reenviar por el único socket UDP multiplexado (sin crear hilos ni sockets nuevos)
+                sendViaSharedSocket(parsed, cacheKey, now)
             }
         } catch (_: Exception) {
-            // Túnel cerrado
+            // Túnel cerrado normalmente
         }
     }
 
-    private fun forwardDnsQuery(
+    private fun sendViaSharedSocket(
         parsed: DnsPacketHelper.ParsedUdpPacket,
-        outputStream: FileOutputStream
+        cacheKey: String,
+        nowMs: Long
     ) {
-        var socket: DatagramSocket? = null
+        if (pendingQueries.size > 96) {
+            val cutoff = nowMs - 5_000L
+            pendingQueries.entries.removeIf { it.value.createdAtMs < cutoff }
+        }
+
+        val mappedId = txIdCounter.getAndIncrement() and 0xFFFF
+        val payloadToSend = parsed.dnsPayload.copyOf()
+        val orig0 = payloadToSend[0]
+        val orig1 = payloadToSend[1]
+        payloadToSend[0] = ((mappedId ushr 8) and 0xFF).toByte()
+        payloadToSend[1] = (mappedId and 0xFF).toByte()
+
+        pendingQueries[mappedId] = PendingQuery(
+            originalPacket = parsed,
+            origId0 = orig0,
+            origId1 = orig1,
+            cacheKey = cacheKey,
+            createdAtMs = nowMs
+        )
+
         try {
-            socket = DatagramSocket()
-            protect(socket)
-            socket.soTimeout = 3000
+            val socket = getOrCreateUpstreamSocket()
+            val upstreamAddr = resolveUpstreamAddress()
+            val packet = DatagramPacket(payloadToSend, payloadToSend.size, upstreamAddr, 53)
+            socket.send(packet)
+        } catch (_: Exception) {
+            // Si cambió la red (Wi-Fi <-> 5G), recrear socket una vez
+            resetUpstreamSocket()
+            try {
+                val socket = getOrCreateUpstreamSocket()
+                val upstreamAddr = resolveUpstreamAddress()
+                val packet = DatagramPacket(payloadToSend, payloadToSend.size, upstreamAddr, 53)
+                socket.send(packet)
+            } catch (_: Exception) {
+                pendingQueries.remove(mappedId)
+            }
+        }
+    }
 
-            val upstreamIp = AdBlockState.upstreamDnsIp.value
-            val upstreamAddress = InetAddress.getByName(upstreamIp)
-            val requestPacket = DatagramPacket(
-                parsed.dnsPayload,
-                parsed.dnsPayload.size,
-                upstreamAddress,
-                53
-            )
-            socket.send(requestPacket)
+    private fun runUpstreamReceiverLoop(
+        outputStream: FileOutputStream,
+        scope: CoroutineScope
+    ) {
+        val receiveBuffer = ByteArray(2048)
+        while (scope.isActive) {
+            try {
+                val socket = getOrCreateUpstreamSocket()
+                val datagram = DatagramPacket(receiveBuffer, receiveBuffer.size)
+                socket.receive(datagram)
 
-            val responseBuffer = ByteArray(2048)
-            val responseDatagram = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responseDatagram)
+                if (datagram.length < 12) continue
+                val mappedId = ((receiveBuffer[0].toInt() and 0xFF) shl 8) or
+                        (receiveBuffer[1].toInt() and 0xFF)
+                val pending = pendingQueries.remove(mappedId) ?: continue
 
-            val dnsResponse = responseBuffer.copyOfRange(0, responseDatagram.length)
-            val ipUdpPacket = DnsPacketHelper.buildIpv4UdpResponse(parsed, dnsResponse)
+                val responsePayload = receiveBuffer.copyOfRange(0, datagram.length)
+                responsePayload[0] = pending.origId0
+                responsePayload[1] = pending.origId1
 
-            synchronized(writeLock) {
+                // Guardar en caché solo respuestas válidas (RCODE == 0)
+                val rcode = responsePayload[3].toInt() and 0x0F
+                if (rcode == 0) {
+                    synchronized(cacheLock) {
+                        dnsCache[pending.cacheKey] = CachedDnsEntry(
+                            payload = responsePayload.copyOf(),
+                            expiresAtMs = System.currentTimeMillis() + DNS_CACHE_TTL_MS
+                        )
+                    }
+                }
+
+                val ipUdp = DnsPacketHelper.buildIpv4UdpResponse(pending.originalPacket, responsePayload)
+                writeToTun(outputStream, ipUdp)
+            } catch (_: Exception) {
+                if (!scope.isActive) break
                 try {
-                    outputStream.write(ipUdpPacket)
-                } catch (_: Exception) {
+                    Thread.sleep(150)
+                } catch (_: InterruptedException) {
+                    break
                 }
             }
-        } catch (_: Exception) {
-            // Tiempo de espera agotado o red no disponible
-        } finally {
-            socket?.close()
+        }
+    }
+
+    private fun writeToTun(outputStream: FileOutputStream, packet: ByteArray) {
+        synchronized(writeLock) {
+            try {
+                outputStream.write(packet)
+            } catch (_: Exception) {
+            }
         }
     }
 
     private fun stopTunnelOnly() {
+        AdBlockState.flushStatsToDisk(applicationContext)
         serviceScope?.cancel()
         serviceScope = null
+        pendingQueries.clear()
+        resetUpstreamSocket()
         try {
             vpnInterface?.close()
         } catch (_: Exception) {

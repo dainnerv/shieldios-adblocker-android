@@ -12,6 +12,11 @@ object DnsPacketHelper {
         val dnsPayload: ByteArray
     )
 
+    data class DnsQuestion(
+        val domain: String,
+        val qType: Int
+    )
+
     fun parseIpv4UdpDns(packet: ByteArray, length: Int): ParsedUdpPacket? {
         if (length < 28) return null
         val version = (packet[0].toInt() ushr 4) and 0x0F
@@ -21,7 +26,7 @@ object DnsPacketHelper {
         if (length < ipHeaderLen + 8) return null
 
         val protocol = packet[9].toInt() and 0xFF
-        if (protocol != 17) return null // 17 = UDP
+        if (protocol != 17) return null
 
         val srcIp = packet.copyOfRange(12, 16)
         val dstIp = packet.copyOfRange(16, 20)
@@ -43,16 +48,19 @@ object DnsPacketHelper {
         return ParsedUdpPacket(srcIp, dstIp, srcPort, dstPort, dnsPayload)
     }
 
-    fun extractQueryDomain(dnsPayload: ByteArray): String? {
+    fun extractQuestion(dnsPayload: ByteArray): DnsQuestion? {
         if (dnsPayload.size < 13) return null
-        val sb = StringBuilder()
+        val sb = StringBuilder(48)
         var pos = 12
         var jumps = 0
 
         while (pos < dnsPayload.size && jumps < 64) {
             val len = dnsPayload[pos].toInt() and 0xFF
-            if (len == 0) break
-            if ((len and 0xC0) == 0xC0) break // Puntero inesperado en QNAME
+            if (len == 0) {
+                pos++
+                break
+            }
+            if ((len and 0xC0) == 0xC0) return null
             pos++
             if (pos + len > dnsPayload.size) return null
             if (sb.isNotEmpty()) sb.append('.')
@@ -62,17 +70,21 @@ object DnsPacketHelper {
             pos += len
             jumps++
         }
-        return if (sb.isNotEmpty()) sb.toString().lowercase() else null
+
+        if (sb.isEmpty()) return null
+        val qType = if (pos + 1 < dnsPayload.size) {
+            ((dnsPayload[pos].toInt() and 0xFF) shl 8) or (dnsPayload[pos + 1].toInt() and 0xFF)
+        } else {
+            1
+        }
+        return DnsQuestion(sb.toString().lowercase(), qType)
     }
 
     fun buildNxDomainResponse(queryPayload: ByteArray): ByteArray {
         val response = queryPayload.copyOf()
         if (response.size >= 12) {
-            // QR=1 (Response), Opcode=0, AA=0, TC=0, RD=1 -> 0x81
-            // RA=1, Z=0, RCODE=3 (NXDOMAIN) -> 0x83
             response[2] = 0x81.toByte()
             response[3] = 0x83.toByte()
-            // ANCOUNT = 0, NSCOUNT = 0, ARCOUNT = 0
             response[6] = 0
             response[7] = 0
             response[8] = 0
@@ -92,25 +104,22 @@ object DnsPacketHelper {
         val totalLength = ipHeaderLen + udpHeaderLen + dnsResponsePayload.size
         val buffer = ByteBuffer.allocate(totalLength)
 
-        // Cabecera IPv4
-        buffer.put(0x45.toByte()) // Version 4, IHL 5
-        buffer.put(0x00.toByte()) // TOS
+        buffer.put(0x45.toByte())
+        buffer.put(0x00.toByte())
         buffer.putShort(totalLength.toShort())
-        buffer.putShort(0x0000.toShort()) // Identification
-        buffer.putShort(0x4000.toShort()) // Don't Fragment
-        buffer.put(64.toByte()) // TTL
-        buffer.put(17.toByte()) // Protocol UDP
-        buffer.putShort(0x0000.toShort()) // Checksum placeholder
-        buffer.put(original.dstIp) // Source IP (10.0.0.1)
-        buffer.put(original.srcIp) // Destination IP (10.0.0.2)
+        buffer.putShort(0x0000.toShort())
+        buffer.putShort(0x4000.toShort())
+        buffer.put(64.toByte())
+        buffer.put(17.toByte())
+        buffer.putShort(0x0000.toShort())
+        buffer.put(original.dstIp)
+        buffer.put(original.srcIp)
 
-        // Cabecera UDP
-        buffer.putShort(original.dstPort.toShort()) // Source port (53)
-        buffer.putShort(original.srcPort.toShort()) // Destination port
+        buffer.putShort(original.dstPort.toShort())
+        buffer.putShort(original.srcPort.toShort())
         buffer.putShort((udpHeaderLen + dnsResponsePayload.size).toShort())
-        buffer.putShort(0x0000.toShort()) // Checksum 0 permitido en IPv4 UDP
+        buffer.putShort(0x0000.toShort())
 
-        // Payload DNS
         buffer.put(dnsResponsePayload)
 
         val result = buffer.array()

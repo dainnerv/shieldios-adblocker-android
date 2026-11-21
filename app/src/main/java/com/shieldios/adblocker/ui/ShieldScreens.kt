@@ -3,14 +3,9 @@ package com.shieldios.adblocker.ui
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.provider.Settings
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -31,20 +27,24 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Eco
+import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.List
-import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -54,6 +54,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -64,10 +65,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -86,8 +92,12 @@ fun ShieldAppRoot(onToggleVpn: () -> Unit) {
     val colors = LocalIosColors.current
     var selectedTab by remember { mutableIntStateOf(0) }
 
+    LaunchedEffect(Unit) {
+        AdBlockState.pushUiSnapshot()
+    }
+
     Scaffold(
-        containerColor = colors.background,
+        containerColor = Color.Transparent,
         bottomBar = {
             IosBottomTabBar(
                 selectedTab = selectedTab,
@@ -98,10 +108,19 @@ fun ShieldAppRoot(onToggleVpn: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(colors.bgTop, colors.bgBottom)
+                    )
+                )
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
             when (selectedTab) {
-                0 -> ProtectionTab(onToggleVpn = onToggleVpn)
+                0 -> ProtectionTab(
+                    onToggleVpn = onToggleVpn,
+                    onOpenSettings = { selectedTab = 3 },
+                    onOpenActivity = { selectedTab = 1 }
+                )
                 1 -> ActivityTab()
                 2 -> ListsTab()
                 3 -> SettingsTab()
@@ -116,7 +135,7 @@ private fun IosBottomTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
         Triple("Protección", Icons.Rounded.Shield, 0),
         Triple("Actividad", Icons.Rounded.History, 1),
-        Triple("Listas", Icons.Rounded.List, 2),
+        Triple("Listas", Icons.Rounded.FormatListBulleted, 2),
         Triple("Ajustes", Icons.Rounded.Settings, 3)
     )
 
@@ -124,12 +143,13 @@ private fun IosBottomTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.tabBarBackground)
+            .navigationBarsPadding()
     ) {
         HorizontalDivider(thickness = 0.5.dp, color = colors.separator)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 14.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceAround
         ) {
             items.forEach { (label, icon, index) ->
@@ -138,20 +158,22 @@ private fun IosBottomTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (isSelected) colors.blueSoft else Color.Transparent)
                         .clickable { onSelect(index) }
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .padding(vertical = 7.dp)
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = label,
                         tint = tint,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = label,
-                        fontSize = 10.sp,
+                        fontSize = 11.sp,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                         color = tint
                     )
@@ -162,7 +184,11 @@ private fun IosBottomTabBar(selectedTab: Int, onSelect: (Int) -> Unit) {
 }
 
 @Composable
-private fun ProtectionTab(onToggleVpn: () -> Unit) {
+private fun ProtectionTab(
+    onToggleVpn: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenActivity: () -> Unit
+) {
     val colors = LocalIosColors.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -174,25 +200,10 @@ private fun ProtectionTab(onToggleVpn: () -> Unit) {
     val isUpdating by AdBlockState.isUpdatingLists.collectAsState()
     val lastUpdated by AdBlockState.lastUpdated.collectAsState()
     val recentLogs by AdBlockState.recentLogs.collectAsState()
+    val hourlyBlocked by AdBlockState.hourlyBlocked.collectAsState()
 
     val numberFormat = remember { NumberFormat.getIntegerInstance(Locale.getDefault()) }
     val blockPercent = if (totalQueries > 0) ((blockedCount * 100.0) / totalQueries) else 0.0
-
-    val pulseTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseScale by pulseTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.12f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1600, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseScale"
-    )
-
-    val ringColor by animateColorAsState(
-        targetValue = if (isRunning) colors.green else colors.labelSecondary,
-        label = "ringColor"
-    )
 
     LazyColumn(
         modifier = Modifier
@@ -200,102 +211,165 @@ private fun ProtectionTab(onToggleVpn: () -> Unit) {
             .statusBarsPadding(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
     ) {
+        // Encabezado estilo prototipo: título + subtítulo + botón circular de ajustes
         item {
-            Text(
-                text = "Protección",
-                fontSize = 34.sp,
-                fontWeight = FontWeight.Bold,
-                color = colors.labelPrimary,
-                modifier = Modifier.padding(top = 6.dp, bottom = 16.dp)
-            )
-        }
-
-        // Botón principal circular estilo iOS
-        item {
-            IosGroupedCard {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 28.dp, horizontal = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        if (isRunning) {
-                            Box(
-                                modifier = Modifier
-                                    .size(144.dp)
-                                    .scale(pulseScale)
-                                    .clip(CircleShape)
-                                    .background(colors.green.copy(alpha = 0.16f))
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(124.dp)
-                                .shadow(12.dp, CircleShape)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.verticalGradient(
-                                        if (isRunning) listOf(Color(0xFF34C759), Color(0xFF248A3D))
-                                        else listOf(Color(0xFF8E8E93), Color(0xFF636366))
-                                    )
-                                )
-                                .clickable { onToggleVpn() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.PowerSettingsNew,
-                                contentDescription = "Activar o desactivar protección",
-                                tint = Color.White,
-                                modifier = Modifier.size(52.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(ringColor.copy(alpha = 0.14f))
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = if (isRunning) "Protección ACTIVA" else "Protección desactivada",
-                            color = ringColor,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "VPN local DNS · Nada sale de tu teléfono",
-                        fontSize = 13.sp,
-                        color = colors.labelSecondary
+                        text = "Protección",
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.labelPrimary
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Bloquea anuncios, rastreadores y dominios no deseados",
+                        fontSize = 14.sp,
+                        color = colors.labelSecondary,
+                        lineHeight = 18.sp
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Box(
+                    modifier = Modifier
+                        .padding(top = 4.dp)
+                        .size(42.dp)
+                        .shadow(6.dp, CircleShape, ambientColor = colors.cardShadow, spotColor = colors.cardShadow)
+                        .clip(CircleShape)
+                        .background(colors.cardBackground)
+                        .clickable { onOpenSettings() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Settings,
+                        contentDescription = "Ajustes",
+                        tint = colors.labelSecondary,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
         }
 
-        // Tarjetas de estadísticas
+        // Tarjeta principal Hero: anillo circular verde a la izquierda + 3 indicadores a la derecha
+        item {
+            IosSoftCard(cornerRadius = 26.dp) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Anillo circular interactivo (sin animación 120fps para ahorrar batería)
+                    val ringAccent = if (isRunning) colors.green else colors.labelSecondary
+                    Box(
+                        modifier = Modifier
+                            .size(154.dp)
+                            .clip(CircleShape)
+                            .background(ringAccent.copy(alpha = 0.14f))
+                            .clickable { onToggleVpn() }
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(CircleShape)
+                                .border(
+                                    width = 9.dp,
+                                    brush = Brush.verticalGradient(
+                                        if (isRunning) listOf(Color(0xFF4CD964), Color(0xFF16A34A))
+                                        else listOf(Color(0xFFB0B7C6), Color(0xFF8E96A8))
+                                    ),
+                                    shape = CircleShape
+                                )
+                                .padding(12.dp)
+                                .clip(CircleShape)
+                                .background(colors.cardBackground),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Rounded.VerifiedUser,
+                                    contentDescription = "Estado de protección",
+                                    tint = ringAccent,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Protección",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = ringAccent
+                                )
+                                Text(
+                                    text = if (isRunning) "ACTIVA" else "INACTIVA",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = ringAccent
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(16.dp))
+
+                    // 3 filas de estado a la derecha
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        HeroStatusRow(
+                            icon = Icons.Rounded.Shield,
+                            title = "VPN local DNS",
+                            subtitle = if (isRunning) "Activa" else "En pausa",
+                            active = isRunning
+                        )
+                        HeroStatusRow(
+                            icon = Icons.Rounded.Lock,
+                            title = "Bloqueo de anuncios",
+                            subtitle = if (isRunning) "Habilitado" else "Deshabilitado",
+                            active = isRunning
+                        )
+                        HeroStatusRow(
+                            icon = Icons.Rounded.Eco,
+                            title = "Sin rastreo",
+                            subtitle = if (isRunning) "Privacidad total" else "Sin filtrar",
+                            active = isRunning
+                        )
+                    }
+                }
+            }
+        }
+
+        // Cuadrícula 2x2 de estadísticas (idéntica al prototipo)
         item {
             Spacer(modifier = Modifier.height(14.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                StatCard(
-                    title = "Bloqueados",
+                MetricTile(
+                    icon = Icons.Rounded.Block,
+                    iconTint = colors.red,
+                    iconBg = colors.redSoft,
+                    label = "Bloqueados",
                     value = numberFormat.format(blockedCount),
-                    accent = colors.red,
+                    valueColor = colors.red,
                     modifier = Modifier.weight(1f)
                 )
-                StatCard(
-                    title = "Consultas",
+                MetricTile(
+                    icon = Icons.Rounded.Search,
+                    iconTint = colors.blue,
+                    iconBg = colors.blueSoft,
+                    label = "Consultas",
                     value = numberFormat.format(totalQueries),
-                    accent = colors.blue,
+                    valueColor = colors.blue,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -304,25 +378,37 @@ private fun ProtectionTab(onToggleVpn: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                StatCard(
-                    title = "Tasa de bloqueo",
-                    value = String.format(Locale.getDefault(), "%.1f%%", blockPercent),
-                    accent = colors.green,
+                MetricTile(
+                    icon = Icons.Rounded.Layers,
+                    iconTint = colors.orange,
+                    iconBg = colors.orangeSoft,
+                    label = "Dominios",
+                    value = numberFormat.format(domainCount),
+                    valueColor = colors.orange,
                     modifier = Modifier.weight(1f)
                 )
-                StatCard(
-                    title = "Dominios",
-                    value = numberFormat.format(domainCount),
-                    accent = colors.orange,
+                MetricTile(
+                    icon = Icons.Rounded.BarChart,
+                    iconTint = colors.green,
+                    iconBg = colors.greenSoft,
+                    label = "Tasa de bloqueo",
+                    value = String.format(Locale.getDefault(), "%.1f%%", blockPercent),
+                    valueColor = colors.green,
                     modifier = Modifier.weight(1f)
                 )
             }
         }
 
-        // Botón actualizar listas
+        // Tarjeta de gráfica "Actividad de bloqueo" (Últimas 24 horas)
         item {
             Spacer(modifier = Modifier.height(14.dp))
-            IosGroupedCard {
+            BlockingActivityChartCard(hourlyBlocked = hourlyBlocked)
+        }
+
+        // Tarjeta "Actualizar listas de anuncios"
+        item {
+            Spacer(modifier = Modifier.height(14.dp))
+            IosSoftCard(cornerRadius = 20.dp) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -330,62 +416,116 @@ private fun ProtectionTab(onToggleVpn: () -> Unit) {
                             scope.launch { BlocklistManager.updateLists(context) }
                         }
                         .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(colors.blueSoft),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isUpdating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.2.dp,
+                                color = colors.blue
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.Refresh,
+                                contentDescription = "Actualizar",
+                                tint = colors.blue,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Actualizar listas de anuncios",
                             fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = colors.blue
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.labelPrimary
                         )
                         Text(
                             text = lastUpdated,
-                            fontSize = 12.sp,
+                            fontSize = 13.sp,
                             color = colors.labelSecondary
                         )
                     }
-                    if (isUpdating) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = colors.blue
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Rounded.Refresh,
-                            contentDescription = "Actualizar",
-                            tint = colors.blue
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        tint = colors.labelSecondary
+                    )
                 }
             }
         }
 
-        // Últimos bloqueados (vista rápida)
-        val blockedPreview = recentLogs.filter { it.blocked }.take(6)
-        if (blockedPreview.isNotEmpty()) {
-            item { IosSectionHeader("Últimos bloqueados") }
-            item {
-                IosGroupedCard {
+        // Encabezado "ÚLTIMOS BLOQUEADOS" + "Ver todo"
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp, bottom = 8.dp, start = 4.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "ÚLTIMOS BLOQUEADOS",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.labelSecondary,
+                    letterSpacing = 0.5.sp
+                )
+                Text(
+                    text = "Ver todo",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.blue,
+                    modifier = Modifier.clickable { onOpenActivity() }
+                )
+            }
+        }
+
+        val blockedPreview = recentLogs.filter { it.blocked }.take(5)
+        item {
+            IosSoftCard(cornerRadius = 20.dp) {
+                if (blockedPreview.isEmpty()) {
+                    Text(
+                        text = "Activa la protección para ver los dominios bloqueados en tiempo real.",
+                        fontSize = 13.sp,
+                        color = colors.labelSecondary,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
                     blockedPreview.forEachIndexed { idx, entry ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 11.dp),
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Block,
-                                contentDescription = null,
-                                tint = colors.red,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.redSoft),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Block,
+                                    contentDescription = null,
+                                    tint = colors.red,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
                             Text(
                                 text = entry.domain,
                                 fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
                                 color = colors.labelPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -401,63 +541,303 @@ private fun ProtectionTab(onToggleVpn: () -> Unit) {
                     }
                 }
             }
-        }
-
-        // Nota estilo iOS sobre DNS privado y VPN siempre activa
-        item {
-            IosSectionHeader("Recomendaciones")
-            IosGroupedCard {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Info,
-                        contentDescription = null,
-                        tint = colors.blue,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = "Deja 'DNS privado' en Automático o Desactivado en los ajustes de Android para que el filtro funcione. En Ajustes > VPN puedes activar 'VPN siempre activa' para que no se cierre en segundo plano.",
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        color = colors.labelSecondary
-                    )
-                }
-            }
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-private fun StatCard(
+private fun HeroStatusRow(
+    icon: ImageVector,
     title: String,
+    subtitle: String,
+    active: Boolean
+) {
+    val colors = LocalIosColors.current
+    val tint = if (active) colors.green else colors.labelSecondary
+    val bg = if (active) colors.greenSoft else colors.secondaryFill
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(bg),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column {
+            Text(
+                text = title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.labelPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                fontSize = 12.sp,
+                color = colors.labelSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun MetricTile(
+    icon: ImageVector,
+    iconTint: Color,
+    iconBg: Color,
+    label: String,
     value: String,
-    accent: Color,
+    valueColor: Color,
     modifier: Modifier = Modifier
 ) {
     val colors = LocalIosColors.current
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(colors.cardBackground)
-            .padding(14.dp)
-    ) {
-        Text(
-            text = title,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = colors.labelSecondary
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = value,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = accent
-        )
+    IosSoftCard(modifier = modifier, cornerRadius = 20.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(iconBg),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = colors.labelSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = value,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = valueColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BlockingActivityChartCard(hourlyBlocked: List<Int>) {
+    val colors = LocalIosColors.current
+    val numberFormat = remember { NumberFormat.getIntegerInstance(Locale.getDefault()) }
+
+    // Agrupar 24 horas en 8 puntos suaves (bloques de 3 horas) para curva limpia
+    val points = remember(hourlyBlocked) {
+        val buckets = if (hourlyBlocked.size == 24) hourlyBlocked else List(24) { 0 }
+        List(8) { idx ->
+            buckets[idx * 3] + buckets[idx * 3 + 1] + buckets[idx * 3 + 2]
+        }
+    }
+    val maxVal = (points.maxOrNull() ?: 0).coerceAtLeast(10)
+    val peakIndex = points.indices.maxByOrNull { points[it] } ?: 0
+    val peakValue = points[peakIndex]
+
+    IosSoftCard(cornerRadius = 24.dp) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Actividad de bloqueo",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.labelPrimary
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(colors.secondaryFill)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Últimas 24 horas",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.labelPrimary
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = colors.labelSecondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Etiqueta de pico máximo
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(colors.purple)
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "• ${numberFormat.format(peakValue)}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(128.dp)
+            ) {
+                // Eje Y
+                Column(
+                    modifier = Modifier
+                        .width(36.dp)
+                        .height(112.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(numberFormat.format(maxVal), fontSize = 10.sp, color = colors.labelSecondary)
+                    Text(numberFormat.format(maxVal * 2 / 3), fontSize = 10.sp, color = colors.labelSecondary)
+                    Text(numberFormat.format(maxVal / 3), fontSize = 10.sp, color = colors.labelSecondary)
+                    Text("0", fontSize = 10.sp, color = colors.labelSecondary)
+                }
+
+                // Curva Bezier suave
+                Canvas(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(112.dp)
+                ) {
+                    val w = size.width
+                    val h = size.height
+                    val stepX = w / (points.size - 1).coerceAtLeast(1)
+
+                    // Líneas guía horizontales
+                    for (i in 0..3) {
+                        val y = h * (i / 3f)
+                        drawLine(
+                            color = colors.separator,
+                            start = Offset(0f, y),
+                            end = Offset(w, y),
+                            strokeWidth = 1.dp.toPx()
+                        )
+                    }
+
+                    val coords = points.mapIndexed { idx, value ->
+                        val ratio = (value.toFloat() / maxVal.toFloat()).coerceIn(0f, 1f)
+                        Offset(idx * stepX, h - (ratio * (h * 0.88f)) - 4f)
+                    }
+
+                    val linePath = Path().apply {
+                        moveTo(coords.first().x, coords.first().y)
+                        for (i in 0 until coords.lastIndex) {
+                            val p0 = coords[i]
+                            val p1 = coords[i + 1]
+                            val cx = (p0.x + p1.x) / 2f
+                            cubicTo(cx, p0.y, cx, p1.y, p1.x, p1.y)
+                        }
+                    }
+
+                    val fillPath = Path().apply {
+                        addPath(linePath)
+                        lineTo(coords.last().x, h)
+                        lineTo(coords.first().x, h)
+                        close()
+                    }
+
+                    drawPath(
+                        path = fillPath,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                colors.purple.copy(alpha = 0.28f),
+                                colors.purple.copy(alpha = 0.02f)
+                            )
+                        )
+                    )
+
+                    drawPath(
+                        path = linePath,
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color(0xFF4F7BFF), Color(0xFF8B5CF6))
+                        ),
+                        style = Stroke(
+                            width = 3.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                    )
+
+                    // Línea punteada vertical y punto en el pico
+                    val peakCoord = coords[peakIndex]
+                    drawLine(
+                        color = colors.purple.copy(alpha = 0.45f),
+                        start = Offset(peakCoord.x, peakCoord.y),
+                        end = Offset(peakCoord.x, h),
+                        strokeWidth = 1.2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f)
+                    )
+                    drawCircle(
+                        color = colors.purple,
+                        radius = 5.5.dp.toPx(),
+                        center = peakCoord
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 2.8.dp.toPx(),
+                        center = peakCoord
+                    )
+                }
+            }
+
+            // Etiquetas eje X
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 36.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                listOf("00:00", "04:00", "08:00", "12:00", "16:00", "20:00").forEach { label ->
+                    Text(text = label, fontSize = 10.sp, color = colors.labelSecondary)
+                }
+            }
+        }
     }
 }
 
@@ -515,11 +895,10 @@ private fun ActivityTab() {
             modifier = Modifier.padding(top = 18.dp, bottom = 12.dp)
         )
 
-        // Control segmentado estilo iOS
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(colors.secondaryFill)
                 .padding(3.dp)
         ) {
@@ -545,7 +924,7 @@ private fun ActivityTab() {
             placeholder = { Text("Buscar dominio...", fontSize = 14.sp) },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             singleLine = true,
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -563,9 +942,7 @@ private fun ActivityTab() {
                 )
             }
         } else {
-            LazyColumn(
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
+            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                 item {
                     Text(
                         text = "Toca un dominio bloqueado para agregarlo a la lista blanca.",
@@ -575,16 +952,17 @@ private fun ActivityTab() {
                     )
                 }
                 items(filtered) { entry ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.cardBackground)
-                            .clickable(enabled = entry.blocked) { selectedEntry = entry }
-                            .padding(horizontal = 14.dp, vertical = 11.dp)
+                    IosSoftCard(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        cornerRadius = 14.dp
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = entry.blocked) { selectedEntry = entry }
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
                                 imageVector = if (entry.blocked) Icons.Rounded.Block else Icons.Rounded.CheckCircle,
                                 contentDescription = null,
@@ -624,7 +1002,7 @@ private fun SegmentedButton(
     val colors = LocalIosColors.current
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(if (selected) colors.cardBackground else Color.Transparent)
             .clickable { onClick() }
             .padding(vertical = 8.dp),
@@ -697,7 +1075,7 @@ private fun ListsTab() {
         item { IosSectionHeader("Listas de bloqueo") }
 
         item {
-            IosGroupedCard {
+            IosSoftCard {
                 AdBlockState.availableLists.forEachIndexed { idx, list ->
                     val enabled = enabledLists.contains(list.id)
                     Row(
@@ -710,7 +1088,7 @@ private fun ListsTab() {
                             Text(
                                 text = list.name,
                                 fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.SemiBold,
                                 color = colors.labelPrimary
                             )
                             Text(
@@ -732,7 +1110,7 @@ private fun ListsTab() {
 
         item {
             Spacer(modifier = Modifier.height(12.dp))
-            IosGroupedCard {
+            IosSoftCard(cornerRadius = 18.dp) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -760,14 +1138,14 @@ private fun ListsTab() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 18.dp, bottom = 6.dp, start = 16.dp, end = 8.dp),
+                    .padding(top = 18.dp, bottom = 8.dp, start = 6.dp, end = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "LISTA BLANCA (PERMITIDOS)",
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                     color = colors.labelSecondary
                 )
                 Icon(
@@ -782,7 +1160,7 @@ private fun ListsTab() {
         }
 
         item {
-            IosGroupedCard {
+            IosSoftCard {
                 if (whitelist.isEmpty()) {
                     Text(
                         text = "No hay dominios en lista blanca.",
@@ -830,6 +1208,7 @@ private fun SettingsTab() {
 
     val currentDns by AdBlockState.upstreamDnsIp.collectAsState()
     val excludedApps by AdBlockState.excludedApps.collectAsState()
+    val cacheHits by AdBlockState.cacheHits.collectAsState()
     var showAppPicker by remember { mutableStateOf(false) }
 
     if (showAppPicker) {
@@ -891,10 +1270,37 @@ private fun SettingsTab() {
             )
         }
 
+        item { IosSectionHeader("Ahorro de energía") }
+
+        item {
+            IosSoftCard {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Caché DNS local activo",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.labelPrimary
+                        )
+                        Text(
+                            text = "Consultas resueltas sin usar radio móvil: $cacheHits",
+                            fontSize = 12.sp,
+                            color = colors.labelSecondary
+                        )
+                    }
+                }
+            }
+        }
+
         item { IosSectionHeader("Servidor DNS Upstream") }
 
         item {
-            IosGroupedCard {
+            IosSoftCard {
                 AdBlockState.upstreamDnsOptions.forEachIndexed { idx, dns ->
                     val selected = currentDns == dns.ip
                     Row(
@@ -940,7 +1346,7 @@ private fun SettingsTab() {
         item { IosSectionHeader("Sistema y exclusiones") }
 
         item {
-            IosGroupedCard {
+            IosSoftCard {
                 SettingsRow(
                     title = "Apps excluidas de la VPN",
                     subtitle = "${excludedApps.size} seleccionadas (reinicia la VPN al cambiar)",
@@ -974,7 +1380,7 @@ private fun SettingsTab() {
         item { IosSectionHeader("Datos") }
 
         item {
-            IosGroupedCard {
+            IosSoftCard(cornerRadius = 18.dp) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -986,7 +1392,7 @@ private fun SettingsTab() {
                         text = "Restablecer estadísticas",
                         color = colors.red,
                         fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
